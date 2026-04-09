@@ -5,13 +5,7 @@ use rustix::{
     io::Errno,
     mm::{MapFlags, MremapFlags, MsyncFlags, ProtFlags, mmap, mremap, msync, munmap},
 };
-use std::{
-    ffi::c_void,
-    fs::File,
-    io,
-    os::fd::AsFd,
-    path::{Path, PathBuf},
-};
+use std::{ffi::c_void, fs::File, io, os::fd::AsFd, path::Path};
 
 /// A snapshot of a file
 ///
@@ -71,8 +65,9 @@ fn ficlone_with_fallback(fd_in: impl AsFd, fd_out: impl AsFd, len: usize) -> io:
 
 impl Atommap {
     /// Take a snapshot of the file and map it into memory
-    pub fn open(path: PathBuf) -> io::Result<Self> {
-        let original = File::options().read(true).write(true).open(&path)?;
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let original = File::options().read(true).write(true).open(path)?;
         let len = original.metadata()?.len() as usize;
         let dir = path.parent().unwrap_or(Path::new("."));
         let private: File =
