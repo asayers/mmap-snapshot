@@ -441,3 +441,85 @@ impl Drop for Mmap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: These could use some improvement.  Ideally I'd mount a bunch
+    // of different filesystems... but that requires root.  Anyway, I should
+    // systematically make sure the files used by different tests don't
+    // conflict, and that they're cleaned up at the end.
+
+    fn paths(name: &str) -> impl Iterator<Item = PathBuf> {
+        ["/tmp", "/var/tmp"].into_iter().map(move |d| {
+            let d = Path::new(d).join("mmap-snapshot");
+            std::fs::create_dir_all(&d).unwrap();
+            d.join(name)
+        })
+    }
+
+    #[test]
+    fn mmap() -> std::io::Result<()> {
+        for p in paths("mmap") {
+            std::fs::write(&p, b"Hello world!")?;
+            let f = Mmap::open(&p)?;
+            std::fs::write(&p, b"Goodbye world!")?;
+            assert_eq!(&*f, b"Hello world!");
+            std::fs::remove_file(&p)?;
+            assert_eq!(&*f, b"Hello world!");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mmap_mut() -> std::io::Result<()> {
+        for p in paths("mmap_mut") {
+            std::fs::write(&p, b"Hello world!")?;
+            let mut f = Mmap::open(&p)?;
+            assert_eq!(&*f, b"Hello world!");
+            f[6..11].copy_from_slice(b"sekai");
+            assert_eq!(&*f, b"Hello sekai!");
+            assert_eq!(std::fs::read_to_string(&p)?, "Hello world!");
+            f.commit()?;
+            std::mem::drop(f);
+            assert_eq!(std::fs::read_to_string(&p)?, "Hello sekai!");
+            std::fs::remove_file(&p)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_len() -> std::io::Result<()> {
+        for p in paths("zero_len") {
+            File::create(&p)?;
+            let f = Mmap::open(&p)?;
+            assert_eq!(&*f, b"");
+            std::fs::remove_file(&p)?;
+            assert_eq!(&*f, b"");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_len_mut() -> std::io::Result<()> {
+        for p in paths("zero_len_mut") {
+            File::create(&p)?;
+            let mut f = Mmap::open(&p)?;
+            assert_eq!(&*f, b"");
+            f.resize(12)?;
+            f.copy_from_slice(b"Hello world!");
+            assert_eq!(std::fs::read_to_string(&p)?, "");
+            f.commit()?;
+            assert_eq!(std::fs::read_to_string(&p)?, "Hello world!");
+            f[6..11].copy_from_slice(b"sekai");
+            assert_eq!(&*f, b"Hello sekai!");
+            assert_eq!(std::fs::read_to_string(&p)?, "Hello world!");
+            f.commit()?;
+            std::mem::drop(f);
+            assert_eq!(std::fs::read_to_string(&p)?, "Hello sekai!");
+            std::fs::remove_file(&p)?;
+        }
+        Ok(())
+    }
+}
