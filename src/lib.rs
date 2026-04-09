@@ -77,6 +77,15 @@ impl Atommap {
         ficlone_with_fallback(&self.private, &self.original, self.len)?;
         Ok(())
     }
+
+    pub fn resize(&mut self, new_len: usize) -> io::Result<()> {
+        ftruncate(&self.private, new_len as u64)?;
+        unsafe {
+            self.ptr = mremap(self.ptr, self.len, new_len, MremapFlags::MAYMOVE)?;
+        }
+        self.len = new_len;
+        Ok(())
+    }
 }
 
 impl AsRef<[u8]> for Atommap {
