@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 /*! **Safe** `mmap()` with **snapshot isolation** and **atomic commits**.
 
 ([Linux-only](#os-support), [works best](#performance) on XFS/btrfs.)
@@ -146,6 +148,23 @@ unsafe impl Send for Mmap {}
 unsafe impl Sync for Mmap {}
 
 impl Mmap {
+    /// Take a snapshot of the file and map it into memory.
+    ///
+    /// Note that changes to the snapshot will be discarded unless you call
+    /// [`Mmap::commit`].
+    ///
+    /// # Performance
+    ///
+    /// If the filesystem _doesn't_ support reflinks (eg. ext4) then this
+    /// will physically duplicate the file on disk.  If the file is large then
+    /// clearly this will be slow and consume I/O bandwidth.  The duplicate will
+    /// be deleted when the `Mmap` is dropped.
+    ///
+    /// If the filesystem _does_ support reflinks (XFS, btrfs) then we simply
+    /// mark the file as "copy on write" until the `Mmap` is dropped.  This is
+    /// O(1) and fast: on my machine it takes just 0.1 ms longer than a plain
+    /// old `File::open()`.  Disk usage will not increase until the file is
+    /// modified.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         let original = File::options().read(true).write(true).open(path)?;
@@ -193,6 +212,31 @@ impl Mmap {
         })
     }
 
+    /// Atomically replace the original file with the contents of the snapshot.
+    ///
+    /// # Performance
+    ///
+    /// It's a similar story to [`Mmap::open()`]: if the filesystem supports
+    /// reflinks it'll be a fast O(1) (after waiting for writeback to finish);
+    /// otherwise it'll be O(n).
+    ///
+    /// If you're done with the file you can use [`Mmap::commit_and_close`],
+    /// which is always O(1).
+    ///
+    // # Semantics
+    //
+    // "Atomic commits" means: if you make two changes to a file and then
+    // commit it, any future readers will either see both changes or neither of
+    // them. The classic way to achieve this is by creating a new file with the
+    // changes and linking it over the old one (ie. At the same path). Anyone
+    // who subsequently opens the file will see the new contents. Any processes
+    // that already had the file open will continue to see the old contents.
+    // This technically satisfies the definition, although it is a shame you
+    // have to re-open the file to see the changes. Linux offers syscalls
+    // which let you atomically modify the contents of a file; no tricks, other
+    // readers see the new contents without re-opening. Sadly these are not
+    // available on all filesystems.  XFS and btrfs have support; ext4 does not
+    // and probably never will.
     pub fn commit(&mut self) -> io::Result<()> {
         self.sync()?;
         match &self.path {
@@ -215,6 +259,9 @@ impl Mmap {
         Ok(())
     }
 
+    /// Atomically replace the original file with the contents of the snapshot and close it.
+    ///
+    /// Atomic and O(1).
     pub fn commit_and_close(mut self) -> io::Result<()> {
         match self.path.take() {
             Some(path) => self.link(path),
@@ -222,6 +269,10 @@ impl Mmap {
         }
     }
 
+    /// Link this snapshot to the directory tree at the given path.
+    ///
+    /// Atomic and O(1) if `path` is on the same filesystem as the original
+    /// file.
     pub fn link(self, path: impl AsRef<Path>) -> io::Result<()> {
         linkat(
             &self.private,
