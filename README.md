@@ -133,7 +133,7 @@ loop {
 Instead, write this:
 
 ```rust
-let mut data = Atommap::open("foo.dat")?;
+let mut data = Mmap::open("foo.dat")?;
 data.reverse();
 data.commit()?;
 ```
