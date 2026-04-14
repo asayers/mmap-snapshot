@@ -99,9 +99,10 @@ fn ficlone(fd_out: impl AsFd, fd_in: impl AsFd, len: usize) -> io::Result<bool> 
                 if n == 0 {
                     Err(io::ErrorKind::UnexpectedEof)?;
                 }
-                if n > rem {
-                    panic!()
-                }
+                assert!(
+                    n <= rem,
+                    "copy_file_range returned more bytes than requested"
+                );
                 rem -= n;
             }
             Ok(true)
