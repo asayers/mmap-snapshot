@@ -78,7 +78,7 @@ when mmapping large files.
 */
 
 use rustix::{
-    fs::{AtFlags, Mode, OFlags, copy_file_range, ftruncate, ioctl_ficlone, linkat, open},
+    fs::{AtFlags, Mode, OFlags, copy_file_range, ftruncate, ioctl_ficlone, linkat, open, rename},
     io::Errno,
     mm::{MapFlags, MremapFlags, MsyncFlags, ProtFlags, mmap, mremap, msync, munmap},
 };
@@ -272,7 +272,7 @@ impl Mmap {
                 // self and therefore `self.private` can't receive modifications
                 // while the copy is in-progress
                 ficlone(&private2, &self.private, self.len)?;
-                linkat(&private2, "", rustix::fs::CWD, path, AtFlags::EMPTY_PATH)?;
+                link(&private2, path)?;
             }
         }
         Ok(())
@@ -281,16 +281,17 @@ impl Mmap {
     /// Atomically replace the original file with the contents of the snapshot and close it.
     ///
     /// Atomic and O(1).
-    pub fn commit_and_close(mut self) -> io::Result<()> {
+    pub fn commit_and_close(self) -> io::Result<()> {
+        self.sync()?;
         match &self.original {
-            OriginalFile::Fd(_) => self.commit(),
+            OriginalFile::Fd(original) => ioctl_ficlone(original, &self.private)?,
             OriginalFile::Path(path) => {
-                let path = path.clone();
                 // `path` is always on the same filesystem as the original file - it
                 // _is_ the original file!  So this is atomic.
-                self.link(path)
+                link(&self.private, path)?;
             }
         }
+        Ok(())
     }
 
     /// Link this snapshot to the directory tree at the given path.
@@ -298,13 +299,8 @@ impl Mmap {
     /// Atomic and O(1) if `path` is on the same filesystem as the original
     /// file.
     pub fn link(self, path: impl AsRef<Path>) -> io::Result<()> {
-        linkat(
-            &self.private,
-            "",
-            rustix::fs::CWD,
-            path.as_ref(),
-            AtFlags::EMPTY_PATH,
-        )?;
+        self.sync()?;
+        link(&self.private, path.as_ref())?;
         Ok(())
     }
 
@@ -385,6 +381,28 @@ impl Mmap {
         assert!(self.ptr.is_null() == (self.len == 0));
         Ok(())
     }
+}
+
+// Now the most annoying part: you can't just link the file to
+// `path` because it'll fail if `path` already exists (which it
+// does).  So we have to do another little dance, and this one
+// is actually racy :-(
+fn link(fd: &File, path: &Path) -> io::Result<()> {
+    let mut tmppath = path.with_added_extension(".tmp");
+    loop {
+        match linkat(fd, "", rustix::fs::CWD, &tmppath, AtFlags::EMPTY_PATH) {
+            Ok(()) => {
+                rename(tmppath, path)?;
+                break; // we did it!
+            }
+            Err(Errno::EXIST) => {
+                tmppath = tmppath.with_added_extension(".tmp");
+                // try again...
+            }
+            Err(e) => Err(e)?,
+        }
+    }
+    Ok(())
 }
 
 impl Deref for Mmap {
