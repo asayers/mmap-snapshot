@@ -246,6 +246,8 @@ impl Mmap {
 
     /// Atomically replace the original file with the contents of the snapshot.
     ///
+    /// You can continue to read/write the mmap after calling `commit()`.
+    ///
     /// # Performance
     ///
     /// It's a similar story to [`Mmap::open()`]: if the filesystem supports
@@ -254,21 +256,6 @@ impl Mmap {
     ///
     /// If you're done with the file you can use [`Mmap::commit_and_close`],
     /// which is always O(1).
-    ///
-    // # Semantics
-    //
-    // "Atomic commits" means: if you make two changes to a file and then
-    // commit it, any future readers will either see both changes or neither of
-    // them. The classic way to achieve this is by creating a new file with the
-    // changes and linking it over the old one (ie. At the same path). Anyone
-    // who subsequently opens the file will see the new contents. Any processes
-    // that already had the file open will continue to see the old contents.
-    // This technically satisfies the definition, although it is a shame you
-    // have to re-open the file to see the changes. Linux offers syscalls
-    // which let you atomically modify the contents of a file; no tricks, other
-    // readers see the new contents without re-opening. Sadly these are not
-    // available on all filesystems.  XFS and btrfs have support; ext4 does not
-    // and probably never will.
     pub fn commit(&mut self) -> io::Result<()> {
         self.sync()?;
         match &self.original {
@@ -282,7 +269,7 @@ impl Mmap {
                 let private2: File =
                     open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
                 // This is non-atomic but that's fine, since we're holding &mut
-                // self and therefore `self.private` can't recieve modifications
+                // self and therefore `self.private` can't receive modifications
                 // while the copy is in-progress
                 ficlone(&private2, &self.private, self.len)?;
                 linkat(&private2, "", rustix::fs::CWD, path, AtFlags::EMPTY_PATH)?;
@@ -299,6 +286,8 @@ impl Mmap {
             OriginalFile::Fd(_) => self.commit(),
             OriginalFile::Path(path) => {
                 let path = path.clone();
+                // `path` is always on the same filesystem as the original file - it
+                // _is_ the original file!  So this is atomic.
                 self.link(path)
             }
         }
