@@ -177,7 +177,9 @@ impl Mmap {
         let path = path.as_ref();
         let original = File::options().read(true).write(true).open(path)?;
         let len = original.metadata()?.len() as usize;
-        assert!(len < isize::MAX as usize);
+        if len >= isize::MAX as usize {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
         let dir = path.parent().unwrap_or(Path::new("."));
         let private: File =
             open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
@@ -318,7 +320,9 @@ impl Mmap {
 
     /// Change the size of the file.  If extending, the extension is filled with zeroes.
     pub fn resize(&mut self, new_len: usize) -> io::Result<()> {
-        assert!(new_len < isize::MAX as usize);
+        if new_len >= isize::MAX as usize {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
         if new_len == self.len {
             return Ok(());
         }
