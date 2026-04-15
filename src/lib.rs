@@ -7,17 +7,33 @@
 
 ## Example
 
+Mmap a file as `&[u8]`:
+
 ```rust
 # use mmap_snapshot::Mmap;
 # fn foo() -> std::io::Result<()> {
-# let path = std::path::Path::new("/tmp/foo");
+# let path = std::path::Path::new("/tmp/doctest_1");
 # std::fs::write(&path, b"Hello world!")?;
+let mmap = Mmap::open(&path)?;
 assert_eq!(mmap.len(), 12);
 assert_eq!(&mmap[..], b"Hello world!");
+# std::fs::remove_file(path)?;
+# Ok(())
+# }
+```
+
+Mmap a file as `&mut [u8]`, committing the changes back to disk:
+
+```rust
+# use mmap_snapshot::MmapMut;
+# fn foo() -> std::io::Result<()> {
+# let path = std::path::Path::new("/tmp/doctest_2");
+# std::fs::write(&path, b"Hello world!")?;
 let mut mmap = MmapMut::open(&path)?;
 mmap[6..11].copy_from_slice(b"sekai");
 mmap.commit()?;
 assert_eq!(std::fs::read_to_string(&path)?, "Hello sekai!");
+# std::fs::remove_file(path)?;
 # Ok(())
 # }
 ```
@@ -120,6 +136,183 @@ fn ficlone(fd_out: impl AsFd, fd_in: impl AsFd, len: usize) -> io::Result<bool> 
 }
 
 /// A point-in-time snapshot of a file
+///
+/// Read the file contents using the `Deref` impl.  The data you see will
+/// reflect the state of the file at the time `open()` was called; writes by other
+/// process are not reflected.  In other words, `Mmap` will show you a consistent
+/// point-in-time snapshot of the file.
+///
+/// Data is not loaded eagerly into memory.  It will be read in from disk on demand.
+/// For this we rely on the COW capabilities of the underlying filesystem.
+pub struct Mmap {
+    ptr: *mut c_void, // null iff len == 0
+    len: usize,
+}
+
+// SAFETY: `ptr`+`len` are just "plain old memory" (that's the point of the
+// trick with the private unlinked file.)  It can be read from any thread.
+unsafe impl Send for Mmap {}
+// SAFETY: `ptr`+`len` are just "plain old memory" (that's the point of the
+// trick with the private unlinked file.)  It can be read concurrently from
+// multiple threads.
+unsafe impl Sync for Mmap {}
+
+impl Mmap {
+    /// Take a snapshot of the file and map it into memory.
+    ///
+    /// # Performance
+    ///
+    /// If the filesystem _doesn't_ support reflinks (eg. ext4) then this will
+    /// physically duplicate the file on disk.  If the file is large then this
+    /// will be slow and consume disk space.  The duplicate will be deleted when
+    /// the `Mmap` is dropped.
+    ///
+    /// If the filesystem _does_ support reflinks (XFS, btrfs) then we simply
+    /// mark the file as "copy on write" until the `Mmap` is dropped.  This is
+    /// O(1) and fast: on my machine it takes just 0.1 ms longer than a plain
+    /// old `File::open()`.  Disk usage will not increase unless the file is
+    /// externally modified.
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let original = File::open(path)?;
+        let len = original.metadata()?.len() as usize;
+        if len >= isize::MAX as usize {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        let dir = path.parent().unwrap_or(Path::new("."));
+        // Create an unlinked clone of `original`
+        let private: File =
+            open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
+        ficlone(&private, &original, len)?;
+
+        let ptr;
+        if len == 0 {
+            ptr = std::ptr::null_mut();
+        } else {
+            // SAFETY:
+            // > If `ptr` is not null, it must be aligned...
+            //
+            // `ptr` is null.
+            //
+            // > If there exist any Rust references referring to the memory region
+            //
+            // We're letting the kernel pick an unused region so there shouldn't be any.
+            //
+            // > or if you subsequently create a Rust reference referring to the
+            // > resulting region,
+            //
+            // We will be doing this.
+            //
+            // > it is your responsibility to ensure that the Rust reference invariants are
+            // > preserved, including ensuring that the memory is not mutated in a way that
+            // > a Rust reference would not expect.
+            //
+            // See the safety comment in the Deref impl.
+            unsafe {
+                ptr = mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    ProtFlags::READ,
+                    MapFlags::SHARED,
+                    &private,
+                    0,
+                )?;
+            }
+        };
+        assert!(ptr.is_null() == (len == 0));
+        // We drop `original` and `private` here, closing both fds.  The mapping
+        // itself keeps `private`'s inode alive.  Unmapping will drop the
+        // linkcount on the inode to zero and destroy it.
+        Ok(Self { ptr, len })
+    }
+}
+
+impl Deref for Mmap {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        if self.len == 0 {
+            &[]
+        } else {
+            // SAFETY:
+            // > `ptr` must be non-null
+            //
+            // We just checked that `len` is non-zero.  This implies that `ptr`
+            // is not null (as per the assert in `open()`).
+            //
+            // > `ptr` must be valid for reads for `len * size_of::<T>()` many bytes
+            // > ...
+            // > The entire memory range of this slice must be contained within a single allocation!
+            //
+            // The whole range comes from a single call to `mmap()` with length
+            // `len`.
+            //
+            // >   * `ptr` must be properly aligned
+            //
+            // The element type is `u8`, so `ptr` is trivially aligned.
+            //
+            // > `ptr` must point to `len` consecutive properly initialized values
+            // > of type `u8`.
+            //
+            // File-backed VMAs count as initialized.  There's no such thing as a
+            // file which contains uninitialised bytes.  (Even sparse regions are
+            // well-defined as containing zeroes.)
+            //
+            // > The memory referenced by the returned slice must not be mutated for
+            // > the duration of lifetime `'a`, except inside an `UnsafeCell`.
+            //
+            // Since we never modify the memory directly, the only way for it to
+            // change is via writes to the underlying file. However, we can be sure
+            // that no such writes will take place. That's because:
+            //
+            // * The file was created with `O_TMPFILE`, which means it's impossible
+            //   to create a new fd for the file via the filesystem.
+            // * We close our fd without ever exposing it, which means it's not
+            //   possible that anyone cloned it.
+            // * Therefore no fds exist referencing the underlying file
+            // * Therefore the memory can only be accessed via the mmap
+            //
+            // > The total size `len * size_of::<T>()` of the slice must be no
+            // > larger than `isize::MAX`
+            //
+            // We check this in open().
+            //
+            // > adding `len * size_of::<T>()` to `ptr` must not "wrap around" the
+            // > address space.
+            //
+            // `mmap()` puts the mapping somewhere where it fits, so
+            // `self.ptr.add(self.len)` will never overflow the address space.
+            unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.len) }
+        }
+    }
+}
+
+impl Drop for Mmap {
+    fn drop(&mut self) {
+        if self.len != 0 {
+            // SAFETY:
+            // > `ptr` must be aligned to the applicable page size, and the range of memory
+            // > starting at `ptr` and extending for `len` bytes, rounded up to the
+            // > applicable page size, must be valid to mutate with `ptr`'s provenance.
+            //
+            // `self.ptr` comes from an mmap with length `self.len`.
+            //
+            // > And there must be no Rust references referring to that memory.
+            //
+            // The only way to get references to the mapping is via the Deref impl,
+            // which take borrows on the `Mmap`.  Since this method takes `&mut
+            // self`, we know that no such references are live.
+            unsafe {
+                match munmap(self.ptr, self.len) {
+                    Ok(()) => (),
+                    Err(e) => eprintln!("munmap failed: {e}"),
+                }
+            }
+        }
+    }
+}
+
+/// A mutable snapshot of a file
 ///
 /// The snapshot can be modified and then atomically committed to disk,
 /// overwriting the contents of file.
@@ -534,7 +727,7 @@ mod tests {
     fn mmap() -> std::io::Result<()> {
         for p in paths("mmap") {
             std::fs::write(&p, b"Hello world!")?;
-            let f = MmapMut::open(&p)?;
+            let f = Mmap::open(&p)?;
             std::fs::write(&p, b"Goodbye world!")?;
             assert_eq!(&*f, b"Hello world!");
             std::fs::remove_file(&p)?;
@@ -564,7 +757,7 @@ mod tests {
     fn zero_len() -> std::io::Result<()> {
         for p in paths("zero_len") {
             File::create(&p)?;
-            let f = MmapMut::open(&p)?;
+            let f = Mmap::open(&p)?;
             assert_eq!(&*f, b"");
             std::fs::remove_file(&p)?;
             assert_eq!(&*f, b"");
