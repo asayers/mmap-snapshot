@@ -14,7 +14,7 @@
 # std::fs::write(&path, b"Hello world!")?;
 let mut mmap = Mmap::open(&path)?;
 assert_eq!(mmap.as_ref(), b"Hello world!");
-mmap.as_mut()[6..11].copy_from_slice(b"sekai");
+mmap[6..11].copy_from_slice(b"sekai");
 mmap.commit()?;
 assert_eq!(std::fs::read_to_string(&path)?, "Hello sekai!");
 # Ok(())
@@ -85,6 +85,7 @@ use std::{
     ffi::c_void,
     fs::File,
     io,
+    ops::{Index, IndexMut},
     os::fd::AsFd,
     path::{Path, PathBuf},
 };
@@ -404,6 +405,56 @@ impl AsMut<[u8]> for Mmap {
         // `self.ptr.add(self.len)` will never overflow the address space.
         // `self.len < isize::MAX` is asserted in open() and resize().
         unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
+    }
+}
+
+impl Index<usize> for Mmap {
+    type Output = u8;
+    fn index(&self, i: usize) -> &Self::Output {
+        &self.as_ref()[i]
+    }
+}
+impl IndexMut<usize> for Mmap {
+    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+        &mut self.as_mut()[i]
+    }
+}
+
+macro_rules! index {
+    ($ty: path) => {
+        impl Index<$ty> for Mmap {
+            type Output = [u8];
+            fn index(&self, i: $ty) -> &Self::Output {
+                &self.as_ref()[i]
+            }
+        }
+        impl IndexMut<$ty> for Mmap {
+            fn index_mut(&mut self, i: $ty) -> &mut Self::Output {
+                &mut self.as_mut()[i]
+            }
+        }
+    };
+}
+
+index!(std::ops::Range<usize>);
+index!(std::ops::RangeFrom<usize>);
+index!(std::ops::RangeFull);
+index!(std::ops::RangeInclusive<usize>);
+index!(std::ops::RangeTo<usize>);
+index!(std::ops::RangeToInclusive<usize>);
+
+impl Index<(std::ops::Bound<usize>, std::ops::Bound<usize>)> for Mmap {
+    type Output = [u8];
+    fn index(&self, i: (std::ops::Bound<usize>, std::ops::Bound<usize>)) -> &Self::Output {
+        &self.as_ref()[i]
+    }
+}
+impl IndexMut<(std::ops::Bound<usize>, std::ops::Bound<usize>)> for Mmap {
+    fn index_mut(
+        &mut self,
+        i: (std::ops::Bound<usize>, std::ops::Bound<usize>),
+    ) -> &mut Self::Output {
+        &mut self.as_mut()[i]
     }
 }
 
