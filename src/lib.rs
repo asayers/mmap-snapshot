@@ -615,6 +615,7 @@ impl MmapMut {
 // `path` because it'll fail if `path` already exists (which it
 // does).  So we have to do another little dance, and this one
 // is actually racy :-(
+// TODO: We can avoid all this if/when Linux ever gets `AtFlags::REPLACE`.
 fn link(fd: &File, path: &Path) -> io::Result<()> {
     let mut tmppath = path.with_added_extension(".tmp");
     loop {
