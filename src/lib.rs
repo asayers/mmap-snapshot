@@ -54,22 +54,25 @@ See the SAFETY comments in the code for a more thorough explanation.
 ## Performance
 
 The cost of safety?
-On my machine, `Mmap::open()` takes 0.1 ms longer than `File::open()`,
-that's it, and it doesn't matter how big the file is!
+On my machine, `Mmap::open()` takes just 0.1 ms longer than `File::open()` -
+that's it!
+And it doesn't matter how big the file is.
 A small price to pay.
 
-But there's a catch: if the file is on a filesystem which doesn’t support
-reflinks then we have to copy the whole file.  Therefore, while the semantics
-are the same on all filesystems, the performance characteristics vary wildly.
+But there's a catch:
+if the file is on a filesystem which doesn’t support reflinks
+then we have to copy the whole file.
+Therefore, while the semantics are the same on all filesystems,
+the performance characteristics vary wildly.
 
-This table shows whether methods are constant-time (✅) or linear-time (⏳️) in
+This table shows whether methods are constant-time or linear-time in
 the size of the file:
 
 Method | XFS | btrfs | ext4 | tmpfs
 -------|-----|-------|------|-------
-[`open()`][`Mmap::open`]                            | ✅ | ✅ | ⏳️ | ⏳️
-[`commit()`][`MmapMut::commit`]                     | ✅ | ✅ | ⏳️ | ⏳️
-[`commit_and_close()`][`MmapMut::commit_and_close`] | ✅ | ✅ | ✅ | ✅
+[`open()`][`Mmap::open`]                            | O(1) | O(1) | O(n) | O(n)
+[`commit()`][`MmapMut::commit`]                     | O(1) | O(1) | O(n) | O(n)
+[`commit_and_close()`][`MmapMut::commit_and_close`] | O(1) | O(1) | O(1) | O(1)
 
 See the method docs for more details.
 
