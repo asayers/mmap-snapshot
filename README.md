@@ -176,4 +176,13 @@ Immutable files can be safely mmapped without this trick.  That means files whic
 
 See [safe-mmap] for a crate that supports this use-case.
 
+<div class="warning">
+
+There are a few crates out there which expose "safe" `mmap()` without doing
+anything to ensure that the file isn't externally modified.  These are simply
+unsound and should not be used!  If you want to risk UB, that's OK; but it
+should be _your_ code that contains the `unsafe` keyword.
+
+</div>
+
 [safe-mmap]: https://crates.io/crates/safe-mmap
