@@ -451,6 +451,33 @@ impl MmapMut {
         })
     }
 
+    /// Create a mapping with zero length.
+    ///
+    /// Use [`MmapMut::resize`] to increase the length.  The file won't be
+    /// created until the first time you call [`MmapMut::commit`].
+    pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let original = File::create(path)?;
+        let dir = path.parent().filter(|x| *x != "").unwrap_or(Path::new("."));
+        let private: File =
+            open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
+        let ptr = std::ptr::null_mut();
+        let len = 0;
+        // The clone is a no-op of course; we just do this to find out whether
+        // reflinks are available
+        let fellback = matches!(ioctl_ficlone(&private, &original), Err(Errno::OPNOTSUPP));
+        Ok(Self {
+            private,
+            ptr,
+            len,
+            original: if fellback {
+                OriginalFile::Path(path.to_owned())
+            } else {
+                OriginalFile::Fd(original)
+            },
+        })
+    }
+
     /// Atomically replace the original file with the contents of the snapshot.
     ///
     /// You can continue to read/write the mmap after calling `commit()`.
