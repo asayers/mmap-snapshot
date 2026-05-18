@@ -191,7 +191,7 @@ impl Mmap {
         if len >= isize::MAX as usize {
             return Err(io::ErrorKind::FileTooLarge.into());
         }
-        let dir = path.parent().unwrap_or(Path::new("."));
+        let dir = path.parent().filter(|x| *x != "").unwrap_or(Path::new("."));
         // Create an unlinked clone of `original`
         let private: File =
             open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
@@ -399,7 +399,7 @@ impl MmapMut {
         if len >= isize::MAX as usize {
             return Err(io::ErrorKind::FileTooLarge.into());
         }
-        let dir = path.parent().unwrap_or(Path::new("."));
+        let dir = path.parent().filter(|x| *x != "").unwrap_or(Path::new("."));
         let private: File =
             open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
         let fellback = ficlone(&private, &original, len)?;
@@ -472,7 +472,7 @@ impl MmapMut {
                 // this would not be atomic. And we need to keep self.private
                 // unlinked. So we create a new private file, copy over the
                 // contents, and link it.
-                let dir = path.parent().unwrap_or(Path::new("."));
+                let dir = path.parent().filter(|x| *x != "").unwrap_or(Path::new("."));
                 let private2: File =
                     open(dir, OFlags::TMPFILE | OFlags::RDWR, Mode::RUSR | Mode::WUSR)?.into();
                 // This is non-atomic but that's fine, since we're holding &mut
